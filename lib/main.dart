@@ -2,75 +2,100 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:audioplayers/audioplayers.dart';
 
-void main() => runApp(const MyApp());
-
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData.dark(),
-      home: const PomodoroTimer(),
-    );
-  }
-}
-
-/// ===============================
-/// 設定模型
-/// ===============================
-class PomodoroSettings {
-  int focusMinutes;
-  int shortBreakMinutes;
-  int longBreakMinutes;
-  int longBreakInterval;
-
-  PomodoroSettings({
-    this.focusMinutes = 25,
-    this.shortBreakMinutes = 5,
-    this.longBreakMinutes = 15,
-    this.longBreakInterval = 4,
-  });
-}
-
-/// ===============================
-/// 番茄鐘階段
-/// ===============================
-enum PomodoroPhase { focus, shortBreak, longBreak }
+void main() => runApp(MaterialApp(
+  debugShowCheckedModeBanner: false,
+  theme: ThemeData.dark(),
+  home: PomodoroTimer(),
+));
 
 class PomodoroTimer extends StatefulWidget {
-  const PomodoroTimer({super.key});
-
   @override
-  State<PomodoroTimer> createState() => _PomodoroTimerState();
+  _PomodoroTimerState createState() => _PomodoroTimerState();
 }
 
 class _PomodoroTimerState extends State<PomodoroTimer> {
-  final PomodoroSettings _settings = PomodoroSettings();
-
-  PomodoroPhase _phase = PomodoroPhase.focus;
-  int _seconds = 25 * 60;
-  int _completedPomodoros = 0;
-  bool _isRunning = false;
-
+  static const int defaultTime = 1500;
+  int _seconds = defaultTime;
   Timer? _timer;
+  bool _isRunning = false;
 
   final AudioPlayer _audioPlayer = AudioPlayer();
   bool _isSoundOn = true;
-  String _currentCategory = 'rain';
-  int _currentLevel = 1;
 
-  int get focusTime => _settings.focusMinutes * 60;
-  int get shortBreakTime => _settings.shortBreakMinutes * 60;
-  int get longBreakTime => _settings.longBreakMinutes * 60;
+  String _currentCategory = 'rain';
+  int _currentLevel = 1; // 1, 2, 3 輪流
 
   @override
   void initState() {
     super.initState();
-    _audioPlayer.onPlayerComplete.listen((_) {
-      if (_isRunning && _isSoundOn) _playNextSound();
+
+    // 重點：監聽播放結束事件，實作自動輪流播放
+    _audioPlayer.onPlayerComplete.listen((event) {
+      if (_isRunning && _isSoundOn) {
+        _playNextSound();
+      }
     });
+  }
+
+  // 核心邏輯：計算下一個音檔編號並播放
+  void _playNextSound() async {
+    setState(() {
+      // 1 -> 2 -> 3 -> 1 循環
+      _currentLevel = (_currentLevel % 3) + 1;
+    });
+    await _audioPlayer.play(AssetSource('sounds/$_currentFileName'));
+  }
+
+  String get _currentFileName => '${_currentCategory}_$_currentLevel.mp3';
+
+  void _toggleTimer() async {
+    if (_isRunning) {
+      _timer?.cancel();
+      await _audioPlayer.pause();
+    } else {
+      _timer = Timer.periodic(Duration(seconds: 1), (timer) {
+        setState(() {
+          if (_seconds > 0) {
+            _seconds--;
+          } else {
+            _timer?.cancel();
+            _isRunning = false;
+            _audioPlayer.stop();
+          }
+        });
+      });
+      if (_isSoundOn) {
+        await _audioPlayer.play(AssetSource('sounds/$_currentFileName'));
+      }
+    }
+    setState(() => _isRunning = !_isRunning);
+  }
+
+  void _resetTimer() {
+    _timer?.cancel();
+    _audioPlayer.stop();
+    setState(() {
+      _seconds = defaultTime;
+      _isRunning = false;
+      _currentLevel = 1; // 重置時回到第一個音檔
+    });
+  }
+
+  // 手動切換
+  void _manualUpdateSound(String category, int level) async {
+    setState(() {
+      _currentCategory = category;
+      _currentLevel = level;
+    });
+    if (_isRunning && _isSoundOn) {
+      await _audioPlayer.play(AssetSource('sounds/$_currentFileName'));
+    }
+  }
+
+  String _formatTime(int totalSeconds) {
+    int minutes = totalSeconds ~/ 60;
+    int seconds = totalSeconds % 60;
+    return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
   }
 
   @override
@@ -80,276 +105,142 @@ class _PomodoroTimerState extends State<PomodoroTimer> {
     super.dispose();
   }
 
-  /// ===============================
-  /// Timer
-  /// ===============================
-  void _startTimer() {
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (_seconds <= 0) {
-        _handlePhaseComplete();
-        return;
-      }
-      setState(() => _seconds--);
-    });
-    _playSound();
-  }
-
-  void _pauseTimer() {
-    _timer?.cancel();
-    _audioPlayer.pause();
-    setState(() => _isRunning = false);
-  }
-
-  void _toggleTimer() {
-    setState(() => _isRunning = !_isRunning);
-    _isRunning ? _startTimer() : _pauseTimer();
-  }
-
-  void _resetTimer() {
-    _timer?.cancel();
-    _audioPlayer.stop();
-    setState(() {
-      _phase = PomodoroPhase.focus;
-      _seconds = focusTime;
-      _completedPomodoros = 0;
-      _isRunning = false;
-      _currentLevel = 1;
-    });
-  }
-
-  /// ===============================
-  /// 階段切換
-  /// ===============================
-  void _handlePhaseComplete() {
-    _timer?.cancel();
-    _audioPlayer.stop();
-
-    setState(() {
-      if (_phase == PomodoroPhase.focus) {
-        _completedPomodoros++;
-        if (_completedPomodoros % _settings.longBreakInterval == 0) {
-          _phase = PomodoroPhase.longBreak;
-          _seconds = longBreakTime;
-        } else {
-          _phase = PomodoroPhase.shortBreak;
-          _seconds = shortBreakTime;
-        }
-      } else {
-        _phase = PomodoroPhase.focus;
-        _seconds = focusTime;
-      }
-    });
-
-    _startTimer();
-  }
-
-  /// ===============================
-  /// 音效
-  /// ===============================
-  String get _currentFileName => '${_currentCategory}_$_currentLevel.mp3';
-
-  Future<void> _playSound() async {
-    if (_isRunning && _isSoundOn) {
-      await _audioPlayer.play(
-        AssetSource('sounds/$_currentFileName'),
-      );
-    }
-  }
-
-  void _playNextSound() {
-    setState(() {
-      _currentLevel = (_currentLevel % 3) + 1;
-    });
-    _playSound();
-  }
-
-  void _updateSound({String? category, int? level}) {
-    setState(() {
-      if (category != null) _currentCategory = category;
-      if (level != null) _currentLevel = level;
-    });
-    _playSound();
-  }
-
-  /// ===============================
-  /// UI Helper
-  /// ===============================
-  String get _phaseText {
-    switch (_phase) {
-      case PomodoroPhase.focus:
-        return "FOCUS";
-      case PomodoroPhase.shortBreak:
-        return "SHORT BREAK";
-      case PomodoroPhase.longBreak:
-        return "LONG BREAK";
-    }
-  }
-
-  Color get _phaseColor {
-    if (_phase == PomodoroPhase.focus) return Colors.redAccent;
-    if (_phase == PomodoroPhase.shortBreak) return Colors.greenAccent;
-    return Colors.blueAccent;
-  }
-
-  String _formatTime(int s) =>
-      '${(s ~/ 60).toString().padLeft(2, '0')}:${(s % 60).toString().padLeft(2, '0')}';
-
-  /// ===============================
-  /// UI
-  /// ===============================
   @override
   Widget build(BuildContext context) {
-    final maxTime = _phase == PomodoroPhase.focus
-        ? focusTime
-        : _phase == PomodoroPhase.shortBreak
-        ? shortBreakTime
-        : longBreakTime;
+    double progress = _seconds / defaultTime;
+    Color activeColor = _currentCategory == 'rain' ? Colors.blueAccent : Colors.greenAccent;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text("Pomodoro"),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: () async {
-              await Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => SettingsPage(settings: _settings),
+      backgroundColor: Color(0xFF0F172A),
+      body: SafeArea(
+        child: Column(
+          children: [
+            SizedBox(height: 40),
+            Text("FOCUS FLOW", style: TextStyle(letterSpacing: 4, color: Colors.white38)),
+            Spacer(),
+
+            Stack(
+              alignment: Alignment.center,
+              children: [
+                SizedBox(
+                  width: 260, height: 260,
+                  child: CircularProgressIndicator(
+                    value: progress,
+                    strokeWidth: 4,
+                    backgroundColor: Colors.white10,
+                    valueColor: AlwaysStoppedAnimation<Color>(activeColor),
+                  ),
                 ),
-              );
-              if (_phase == PomodoroPhase.focus) {
-                setState(() => _seconds = focusTime);
-              }
-            },
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          const SizedBox(height: 20),
-          Text(_phaseText, style: TextStyle(color: _phaseColor)),
-          Text("🍅 $_completedPomodoros"),
-          const Spacer(),
-
-          Stack(
-            alignment: Alignment.center,
-            children: [
-              SizedBox(
-                width: 250,
-                height: 250,
-                child: CircularProgressIndicator(
-                  value: _seconds / maxTime,
-                  strokeWidth: 5,
-                  backgroundColor: Colors.white10,
-                  valueColor:
-                  AlwaysStoppedAnimation<Color>(_phaseColor),
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(_formatTime(_seconds), style: TextStyle(fontSize: 72, fontWeight: FontWeight.w200)),
+                    // 顯示目前正在播放哪一個音檔
+                    Text("Playing: $_currentFileName", style: TextStyle(fontSize: 12, color: activeColor.withOpacity(0.5))),
+                  ],
                 ),
+              ],
+            ),
+
+            Spacer(),
+
+            Container(
+              padding: EdgeInsets.symmetric(vertical: 30, horizontal: 20),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.05),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(40)),
               ),
-              Text(
-                _formatTime(_seconds),
-                style: const TextStyle(fontSize: 64),
+              child: Column(
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      _categoryIcon(Icons.umbrella, 'rain', Colors.blueAccent),
+                      _categoryIcon(Icons.forest, 'forest', Colors.greenAccent),
+                      _volumeToggle(),
+                    ],
+                  ),
+                  SizedBox(height: 25),
+                  Text("點擊下方切換起始音檔 (目前會自動輪播)", style: TextStyle(fontSize: 10, color: Colors.white24)),
+                  SizedBox(height: 10),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [1, 2, 3].map((level) => _levelButton(level)).toList(),
+                  ),
+                  SizedBox(height: 40),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      _mainActionButton(),
+                      SizedBox(width: 20),
+                      IconButton(icon: Icon(Icons.refresh, color: Colors.white38), onPressed: _resetTimer),
+                    ],
+                  ),
+                ],
               ),
-            ],
-          ),
-
-          const Spacer(),
-
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              ElevatedButton(
-                onPressed: _toggleTimer,
-                child: Text(_isRunning ? "PAUSE" : "START"),
-              ),
-              const SizedBox(width: 10),
-              IconButton(
-                icon: const Icon(Icons.refresh),
-                onPressed: _resetTimer,
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 20),
-        ],
-      ),
-    );
-  }
-}
-
-/// ===============================
-/// 設定頁
-/// ===============================
-class SettingsPage extends StatefulWidget {
-  final PomodoroSettings settings;
-  const SettingsPage({super.key, required this.settings});
-
-  @override
-  State<SettingsPage> createState() => _SettingsPageState();
-}
-
-class _SettingsPageState extends State<SettingsPage> {
-  late int focus;
-  late int shortBreak;
-  late int longBreak;
-  late int interval;
-
-  @override
-  void initState() {
-    super.initState();
-    focus = widget.settings.focusMinutes;
-    shortBreak = widget.settings.shortBreakMinutes;
-    longBreak = widget.settings.longBreakMinutes;
-    interval = widget.settings.longBreakInterval;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text("設定")),
-      body: ListView(
-        padding: const EdgeInsets.all(20),
-        children: [
-          _slider("專注時間（分鐘）", focus, 10, 60,
-                  (v) => setState(() => focus = v)),
-          _slider("短休息（分鐘）", shortBreak, 3, 15,
-                  (v) => setState(() => shortBreak = v)),
-          _slider("長休息（分鐘）", longBreak, 10, 30,
-                  (v) => setState(() => longBreak = v)),
-          _slider("幾次專注後長休", interval, 2, 6,
-                  (v) => setState(() => interval = v)),
-          const SizedBox(height: 30),
-          ElevatedButton(
-            onPressed: () {
-              widget.settings
-                ..focusMinutes = focus
-                ..shortBreakMinutes = shortBreak
-                ..longBreakMinutes = longBreak
-                ..longBreakInterval = interval;
-              Navigator.pop(context);
-            },
-            child: const Text("儲存"),
-          )
-        ],
-      ),
-    );
-  }
-
-  Widget _slider(String title, int value, int min, int max,
-      ValueChanged<int> onChanged) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text("$title：$value"),
-        Slider(
-          value: value.toDouble(),
-          min: min.toDouble(),
-          max: max.toDouble(),
-          divisions: max - min,
-          label: value.toString(),
-          onChanged: (v) => onChanged(v.round()),
+            ),
+          ],
         ),
-      ],
+      ),
+    );
+  }
+
+  // --- UI Helper Widgets (與先前邏輯相同，僅修改回傳函式) ---
+  Widget _categoryIcon(IconData icon, String category, Color color) {
+    bool isSelected = _currentCategory == category;
+    return GestureDetector(
+      onTap: () => _manualUpdateSound(category, _currentLevel),
+      child: AnimatedContainer(
+        duration: Duration(milliseconds: 300),
+        padding: EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: isSelected ? color.withOpacity(0.2) : Colors.transparent,
+          shape: BoxShape.circle,
+          border: Border.all(color: isSelected ? color : Colors.white10),
+        ),
+        child: Icon(icon, color: isSelected ? color : Colors.white38, size: 28),
+      ),
+    );
+  }
+
+  Widget _levelButton(int level) {
+    bool isSelected = _currentLevel == level;
+    return GestureDetector(
+      onTap: () => _manualUpdateSound(_currentCategory, level),
+      child: Container(
+        margin: EdgeInsets.symmetric(horizontal: 10), width: 50, height: 40,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: isSelected ? Colors.white : Colors.transparent,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: isSelected ? Colors.white : Colors.white10),
+        ),
+        child: Text("L$level", style: TextStyle(color: isSelected ? Colors.black : Colors.white38, fontWeight: FontWeight.bold)),
+      ),
+    );
+  }
+
+  Widget _volumeToggle() {
+    return IconButton(
+      icon: Icon(_isSoundOn ? Icons.volume_up : Icons.volume_off),
+      color: _isSoundOn ? Colors.orangeAccent : Colors.white24,
+      onPressed: () {
+        setState(() => _isSoundOn = !_isSoundOn);
+        if (!_isSoundOn) _audioPlayer.pause();
+        else if (_isRunning) _audioPlayer.play(AssetSource('sounds/$_currentFileName'));
+      },
+    );
+  }
+
+  Widget _mainActionButton() {
+    return ElevatedButton(
+      onPressed: _toggleTimer,
+      style: ElevatedButton.styleFrom(
+        backgroundColor: Colors.white, foregroundColor: Colors.black,
+        padding: EdgeInsets.symmetric(horizontal: 50, vertical: 15),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+      ),
+      child: Text(_isRunning ? "PAUSE" : "FOCUS"),
     );
   }
 }
